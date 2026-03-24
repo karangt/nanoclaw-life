@@ -1,4 +1,5 @@
 import { Channel, NewMessage } from './types.js';
+import { parseMarkdown, toPlainText } from './chat-sdk.js';
 import { formatLocalTime } from './timezone.js';
 
 export function escapeXml(s: string): string {
@@ -31,6 +32,26 @@ export function stripInternalTags(text: string): string {
 export function formatOutbound(rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
+  return text;
+}
+
+/**
+ * Channel-aware outbound formatter.
+ * Strips internal tags and normalizes markdown per channel capability.
+ */
+export function formatOutboundForChannel(
+  rawText: string,
+  channelName: string,
+): string {
+  const text = stripInternalTags(rawText);
+  if (!text) return '';
+
+  // WhatsApp (Baileys) has limited markdown — convert to plain text
+  if (channelName === 'whatsapp') {
+    return toPlainText(parseMarkdown(text));
+  }
+
+  // Telegram, Slack, Discord, etc. handle markdown natively
   return text;
 }
 

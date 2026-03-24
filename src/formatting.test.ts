@@ -5,6 +5,7 @@ import {
   escapeXml,
   formatMessages,
   formatOutbound,
+  formatOutboundForChannel,
   stripInternalTags,
 } from './router.js';
 import { NewMessage } from './types.js';
@@ -200,6 +201,72 @@ describe('formatOutbound', () => {
     expect(
       formatOutbound('<internal>thinking</internal>The answer is 42'),
     ).toBe('The answer is 42');
+  });
+});
+
+// --- formatOutboundForChannel ---
+
+describe('formatOutboundForChannel', () => {
+  it('strips internal tags for all channels', () => {
+    const raw = '<internal>thinking</internal>The answer is 42';
+    expect(formatOutboundForChannel(raw, 'telegram')).toBe('The answer is 42');
+    expect(formatOutboundForChannel(raw, 'whatsapp')).toBe('The answer is 42');
+    expect(formatOutboundForChannel(raw, 'slack')).toBe('The answer is 42');
+  });
+
+  it('returns empty string when all text is internal', () => {
+    expect(formatOutboundForChannel('<internal>hidden</internal>', 'telegram')).toBe('');
+    expect(formatOutboundForChannel('<internal>hidden</internal>', 'whatsapp')).toBe('');
+  });
+
+  it('strips markdown for WhatsApp', () => {
+    const md = '**bold** and *italic* and [link](https://example.com)';
+    const result = formatOutboundForChannel(md, 'whatsapp');
+    expect(result).not.toContain('**');
+    expect(result).not.toContain('*');
+    expect(result).not.toContain('[');
+    expect(result).toContain('bold');
+    expect(result).toContain('italic');
+    expect(result).toContain('link');
+  });
+
+  it('preserves markdown for Telegram', () => {
+    const md = '**bold** and *italic*';
+    const result = formatOutboundForChannel(md, 'telegram');
+    expect(result).toBe('**bold** and *italic*');
+  });
+
+  it('preserves markdown for Slack', () => {
+    const md = '**bold** and *italic*';
+    const result = formatOutboundForChannel(md, 'slack');
+    expect(result).toBe('**bold** and *italic*');
+  });
+
+  it('preserves markdown for Discord', () => {
+    const md = '# Heading\n\n- item 1\n- item 2';
+    const result = formatOutboundForChannel(md, 'discord');
+    expect(result).toContain('# Heading');
+    expect(result).toContain('- item 1');
+  });
+
+  it('preserves markdown for chat-sdk channel', () => {
+    const md = '**bold** text';
+    const result = formatOutboundForChannel(md, 'chat-sdk');
+    expect(result).toBe('**bold** text');
+  });
+
+  it('handles plain text without modification', () => {
+    const plain = 'just plain text';
+    expect(formatOutboundForChannel(plain, 'whatsapp')).toBe('just plain text');
+    expect(formatOutboundForChannel(plain, 'telegram')).toBe('just plain text');
+  });
+
+  it('strips markdown headings for WhatsApp', () => {
+    const md = '## Section Title\n\nSome content';
+    const result = formatOutboundForChannel(md, 'whatsapp');
+    expect(result).not.toContain('##');
+    expect(result).toContain('Section Title');
+    expect(result).toContain('Some content');
   });
 });
 
