@@ -63,6 +63,9 @@ RUN chown -R node:node /workspace && chmod 777 /home/node
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
 
+# Install Todoist claude-code skill (writes config to ~/.claude)
+RUN mkdir -p /home/node/.claude && td skill install claude-code
+
 # Set working directory to group workspace
 WORKDIR /workspace/group
 
