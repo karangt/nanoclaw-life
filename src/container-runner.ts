@@ -34,6 +34,8 @@ const onecli = new OneCLI({ url: ONECLI_URL });
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
 export interface ContainerInput {
   prompt: string;
@@ -230,6 +232,21 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount host gws credentials read-only so the container can use Google Workspace CLI.
+  // Users authenticate once on the host via `gws auth setup`; containers inherit credentials.
+  const gwsConfigDir = path.join(
+    process.env.HOME || `/Users/${process.env.USER}`,
+    '.config',
+    'gws',
+  );
+  if (fs.existsSync(gwsConfigDir)) {
+    mounts.push({
+      hostPath: gwsConfigDir,
+      containerPath: '/home/node/.config/gws',
+      readonly: false, // gws writes token cache alongside credentials
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -305,6 +322,7 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onProgress?: (tools: Array<{ name: string; input: Record<string, unknown> }>) => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -388,9 +406,11 @@ export async function runContainerAgent(
         }
       }
 
-      // Stream-parse for output markers
+      // Stream-parse for output and progress markers
+      parseBuffer += chunk;
+
+      // Output markers
       if (onOutput) {
-        parseBuffer += chunk;
         let startIdx: number;
         while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
           const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
@@ -417,6 +437,27 @@ export async function runContainerAgent(
               { group: group.name, error: err },
               'Failed to parse streamed output chunk',
             );
+          }
+        }
+      }
+
+      // Progress markers (fire-and-forget, not awaited)
+      if (onProgress) {
+        let progIdx: number;
+        while ((progIdx = parseBuffer.indexOf(PROGRESS_START_MARKER)) !== -1) {
+          const endIdx = parseBuffer.indexOf(PROGRESS_END_MARKER, progIdx);
+          if (endIdx === -1) break;
+          const jsonStr = parseBuffer
+            .slice(progIdx + PROGRESS_START_MARKER.length, endIdx)
+            .trim();
+          parseBuffer = parseBuffer.slice(endIdx + PROGRESS_END_MARKER.length);
+          try {
+            const data = JSON.parse(jsonStr);
+            if (Array.isArray(data.tools) && data.tools.length > 0) {
+              onProgress(data.tools as Array<{ name: string; input: Record<string, unknown> }>);
+            }
+          } catch {
+            // ignore malformed progress
           }
         }
       }

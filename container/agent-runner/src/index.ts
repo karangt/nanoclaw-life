@@ -116,11 +116,26 @@ async function readStdin(): Promise<string> {
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
+}
+
+interface ToolCall {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+function writeProgress(tools: ToolCall[]): void {
+  process.stdout.write(
+    PROGRESS_START_MARKER + '\n' +
+    JSON.stringify({ tools }) + '\n' +
+    PROGRESS_END_MARKER + '\n',
+  );
 }
 
 function log(message: string): void {
@@ -501,6 +516,14 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Emit tool call names so the host can show a live status message
+      const content = (message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } }).message?.content;
+      if (content) {
+        const toolCalls: ToolCall[] = content
+          .filter((c) => c.type === 'tool_use' && c.name)
+          .map((c) => ({ name: c.name!, input: c.input ?? {} }));
+        if (toolCalls.length > 0) writeProgress(toolCalls);
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {

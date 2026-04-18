@@ -214,6 +214,40 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+/** Extract the most informative single argument from a tool call for display. */
+function formatToolArg(name: string, input: Record<string, unknown>): string {
+  const trunc = (s: string, len = 60) =>
+    s.length > len ? s.slice(0, len - 1) + '…' : s;
+  const str = (v: unknown) => (typeof v === 'string' ? v : JSON.stringify(v));
+
+  // Per-tool primary argument
+  const primary: Record<string, string> = {
+    Bash: 'command',
+    Read: 'file_path',
+    Write: 'file_path',
+    Edit: 'file_path',
+    Glob: 'pattern',
+    Grep: 'pattern',
+    WebFetch: 'url',
+    WebSearch: 'query',
+    Task: 'description',
+    TaskOutput: 'task_id',
+    TaskStop: 'task_id',
+    TodoWrite: 'todos',
+    NotebookEdit: 'notebook_path',
+  };
+
+  const shortName = name.replace(/^mcp__\w+__/, '');
+  const key = primary[shortName] ?? primary[name];
+  if (key && key in input) return trunc(str(input[key]));
+
+  // Fallback: first string value
+  for (const v of Object.values(input)) {
+    if (typeof v === 'string' && v.length > 0) return trunc(v);
+  }
+  return '';
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -280,6 +314,31 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
+
+  // Send a live status message that we'll edit as tool calls arrive,
+  // and delete before the real response lands.
+  let statusMessageId: string | number | null = null;
+  const recentToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
+  let lastEditTime = 0;
+  const EDIT_DEBOUNCE_MS = 1500;
+
+  statusMessageId = await channel.sendStatusMessage?.(chatJid, '⏳ Working...') ?? null;
+
+  const onProgress = (tools: Array<{ name: string; input: Record<string, unknown> }>): void => {
+    for (const t of tools) recentToolCalls.push(t);
+    const now = Date.now();
+    if (now - lastEditTime < EDIT_DEBOUNCE_MS) return;
+    lastEditTime = now;
+    if (statusMessageId === null) return;
+    // Show last 4 tool calls with their primary argument
+    const lines = recentToolCalls.slice(-4).map(({ name, input }) => {
+      const shortName = name.replace(/^mcp__\w+__/, '');
+      const arg = formatToolArg(name, input);
+      return arg ? `${shortName}: ${arg}` : shortName;
+    });
+    channel.editStatusMessage?.(chatJid, statusMessageId, `⏳ ${lines.join('\n    ')}`)?.catch(() => {});
+  };
+
   let hadError = false;
   let outputSentToUser = false;
 
@@ -294,6 +353,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
+        // Delete status message before the real response so they don't stack up
+        if (statusMessageId !== null) {
+          await channel.deleteStatusMessage?.(chatJid, statusMessageId);
+          statusMessageId = null;
+        }
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
@@ -308,10 +372,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  });
+  }, onProgress);
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+
+  // Clean up status message if the agent errored or produced no text output
+  if (statusMessageId !== null) {
+    await channel.deleteStatusMessage?.(chatJid, statusMessageId);
+    statusMessageId = null;
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -341,6 +411,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onProgress?: (tools: Array<{ name: string; input: Record<string, unknown> }>) => void,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -396,6 +467,7 @@ async function runAgent(
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
+      onProgress,
     );
 
     if (output.newSessionId) {

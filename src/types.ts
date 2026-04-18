@@ -95,6 +95,11 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: live status message (send → edit in-place → delete).
+  // Returns an opaque message ID that editStatusMessage/deleteStatusMessage accept.
+  sendStatusMessage?(jid: string, text: string): Promise<string | number | null>;
+  editStatusMessage?(jid: string, messageId: string | number, text: string): Promise<void>;
+  deleteStatusMessage?(jid: string, messageId: string | number): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
