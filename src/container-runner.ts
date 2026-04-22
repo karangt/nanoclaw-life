@@ -260,6 +260,110 @@ function buildVolumeMounts(
   return mounts;
 }
 
+/**
+ * Returns the mount table for a group — container path → host path mappings.
+ * Pure computation (no side effects): use this when you need to translate paths
+ * without spawning a container (e.g., for IPC send_file path resolution).
+ */
+export function getMountTable(
+  group: RegisteredGroup,
+  isMain: boolean,
+): Array<{ containerPath: string; hostPath: string }> {
+  const table: Array<{ containerPath: string; hostPath: string }> = [];
+  const projectRoot = process.cwd();
+  const groupDir = resolveGroupFolderPath(group.folder);
+
+  if (isMain) {
+    table.push({ containerPath: '/workspace/project', hostPath: projectRoot });
+    table.push({
+      containerPath: '/workspace/project/store',
+      hostPath: path.join(projectRoot, 'store'),
+    });
+    table.push({ containerPath: '/workspace/group', hostPath: groupDir });
+    const globalDir = path.join(GROUPS_DIR, 'global');
+    if (fs.existsSync(globalDir)) {
+      table.push({ containerPath: '/workspace/global', hostPath: globalDir });
+    }
+  } else {
+    table.push({ containerPath: '/workspace/group', hostPath: groupDir });
+    const globalDir = path.join(GROUPS_DIR, 'global');
+    if (fs.existsSync(globalDir)) {
+      table.push({ containerPath: '/workspace/global', hostPath: globalDir });
+    }
+  }
+
+  const groupSessionsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    '.claude',
+  );
+  table.push({
+    containerPath: '/home/node/.claude',
+    hostPath: groupSessionsDir,
+  });
+
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  table.push({ containerPath: '/workspace/ipc', hostPath: groupIpcDir });
+
+  const groupAgentRunnerDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    'agent-runner-src',
+  );
+  table.push({ containerPath: '/app/src', hostPath: groupAgentRunnerDir });
+
+  const gwsConfigDir = path.join(
+    process.env.HOME || `/Users/${process.env.USER}`,
+    '.config',
+    'gws',
+  );
+  if (fs.existsSync(gwsConfigDir)) {
+    table.push({
+      containerPath: '/home/node/.config/gws',
+      hostPath: gwsConfigDir,
+    });
+  }
+
+  if (group.containerConfig?.additionalMounts) {
+    const validatedMounts = validateAdditionalMounts(
+      group.containerConfig.additionalMounts,
+      group.name,
+      isMain,
+    );
+    for (const m of validatedMounts) {
+      table.push({ containerPath: m.containerPath, hostPath: m.hostPath });
+    }
+  }
+
+  return table;
+}
+
+/**
+ * Translate a container-absolute path to a host path using the group's mount table.
+ * Matches the longest container path prefix first.
+ * Returns null if no matching mount is found.
+ */
+export function containerPathToHost(
+  containerPath: string,
+  group: RegisteredGroup,
+  isMain: boolean,
+): string | null {
+  const table = getMountTable(group, isMain);
+  // Sort by containerPath length descending to match most-specific prefix first
+  const sorted = [...table].sort(
+    (a, b) => b.containerPath.length - a.containerPath.length,
+  );
+  for (const { containerPath: cPath, hostPath } of sorted) {
+    if (containerPath === cPath || containerPath.startsWith(cPath + '/')) {
+      const rest = containerPath.slice(cPath.length);
+      return hostPath + rest;
+    }
+  }
+  return null;
+}
+
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
@@ -322,7 +426,9 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  onProgress?: (tools: Array<{ name: string; input: Record<string, unknown> }>) => void,
+  onProgress?: (
+    tools: Array<{ name: string; input: Record<string, unknown> }>,
+  ) => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -454,7 +560,12 @@ export async function runContainerAgent(
           try {
             const data = JSON.parse(jsonStr);
             if (Array.isArray(data.tools) && data.tools.length > 0) {
-              onProgress(data.tools as Array<{ name: string; input: Record<string, unknown> }>);
+              onProgress(
+                data.tools as Array<{
+                  name: string;
+                  input: Record<string, unknown>;
+                }>,
+              );
             }
           } catch {
             // ignore malformed progress

@@ -68,6 +68,38 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  "Send a file from the container filesystem to the user or group. Provide the absolute container path (e.g. /workspace/group/report.pdf). The file must exist on the container filesystem. Images are sent as photos; all other files are sent as documents.",
+  {
+    container_path: z
+      .string()
+      .describe(
+        'Absolute path to the file inside the container (e.g. /workspace/group/report.pdf, /workspace/extra/family-vault/doc.md)',
+      ),
+    caption: z
+      .string()
+      .optional()
+      .describe('Optional caption for the file'),
+  },
+  async (args) => {
+    const data = {
+      type: 'send_file',
+      chatJid,
+      containerPath: args.container_path,
+      caption: args.caption || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: 'File send requested.' }],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

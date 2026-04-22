@@ -318,13 +318,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Send a live status message that we'll edit as tool calls arrive,
   // and delete before the real response lands.
   let statusMessageId: string | number | null = null;
-  const recentToolCalls: Array<{ name: string; input: Record<string, unknown> }> = [];
+  const recentToolCalls: Array<{
+    name: string;
+    input: Record<string, unknown>;
+  }> = [];
   let lastEditTime = 0;
   const EDIT_DEBOUNCE_MS = 1500;
 
-  statusMessageId = await channel.sendStatusMessage?.(chatJid, '⏳ Working...') ?? null;
+  statusMessageId =
+    (await channel.sendStatusMessage?.(chatJid, '⏳ Working...')) ?? null;
 
-  const onProgress = (tools: Array<{ name: string; input: Record<string, unknown> }>): void => {
+  const onProgress = (
+    tools: Array<{ name: string; input: Record<string, unknown> }>,
+  ): void => {
     for (const t of tools) recentToolCalls.push(t);
     const now = Date.now();
     if (now - lastEditTime < EDIT_DEBOUNCE_MS) return;
@@ -336,43 +342,55 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const arg = formatToolArg(name, input);
       return arg ? `${shortName}: ${arg}` : shortName;
     });
-    channel.editStatusMessage?.(chatJid, statusMessageId, `⏳ ${lines.join('\n    ')}`)?.catch(() => {});
+    channel
+      .editStatusMessage?.(
+        chatJid,
+        statusMessageId,
+        `⏳ ${lines.join('\n    ')}`,
+      )
+      ?.catch(() => {});
   };
 
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        // Delete status message before the real response so they don't stack up
-        if (statusMessageId !== null) {
-          await channel.deleteStatusMessage?.(chatJid, statusMessageId);
-          statusMessageId = null;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          // Delete status message before the real response so they don't stack up
+          if (statusMessageId !== null) {
+            await channel.deleteStatusMessage?.(chatJid, statusMessageId);
+            statusMessageId = null;
+          }
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
         }
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  }, onProgress);
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+    onProgress,
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -411,7 +429,9 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  onProgress?: (tools: Array<{ name: string; input: Record<string, unknown> }>) => void,
+  onProgress?: (
+    tools: Array<{ name: string; input: Record<string, unknown> }>,
+  ) => void,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -789,6 +809,12 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
+    },
+    sendFile: async (jid, filePath, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (!channel.sendFile) throw new Error(`Channel for ${jid} does not support sendFile`);
+      return channel.sendFile(jid, filePath, caption);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

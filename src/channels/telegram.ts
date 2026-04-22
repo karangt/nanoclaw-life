@@ -2,7 +2,7 @@ import fs from 'fs';
 import https from 'https';
 import path from 'path';
 
-import { Api, Bot } from 'grammy';
+import { Api, Bot, InputFile } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -439,23 +439,62 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async editStatusMessage(jid: string, messageId: string | number, text: string): Promise<void> {
+  async editStatusMessage(
+    jid: string,
+    messageId: string | number,
+    text: string,
+  ): Promise<void> {
     if (!this.bot) return;
     try {
       const numericId = jid.replace(/^tg:/, '');
       await this.bot.api.editMessageText(numericId, Number(messageId), text);
     } catch (err) {
-      logger.debug({ jid, messageId, err }, 'Failed to edit Telegram status message');
+      logger.debug(
+        { jid, messageId, err },
+        'Failed to edit Telegram status message',
+      );
     }
   }
 
-  async deleteStatusMessage(jid: string, messageId: string | number): Promise<void> {
+  async deleteStatusMessage(
+    jid: string,
+    messageId: string | number,
+  ): Promise<void> {
     if (!this.bot) return;
     try {
       const numericId = jid.replace(/^tg:/, '');
       await this.bot.api.deleteMessage(numericId, Number(messageId));
     } catch (err) {
-      logger.debug({ jid, messageId, err }, 'Failed to delete Telegram status message');
+      logger.debug(
+        { jid, messageId, err },
+        'Failed to delete Telegram status message',
+      );
+    }
+  }
+
+  async sendFile(
+    jid: string,
+    filePath: string,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const file = new InputFile(filePath);
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+      const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp']);
+      const opts = caption ? { caption } : {};
+      if (imageExts.has(ext)) {
+        await this.bot.api.sendPhoto(numericId, file, opts);
+      } else {
+        await this.bot.api.sendDocument(numericId, file, opts);
+      }
+      logger.info({ jid, filePath }, 'Telegram file sent');
+    } catch (err) {
+      logger.error({ jid, filePath, err }, 'Failed to send Telegram file');
     }
   }
 }
