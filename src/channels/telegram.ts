@@ -1,8 +1,12 @@
+import { execFile } from 'child_process';
 import fs from 'fs';
 import https from 'https';
 import path from 'path';
+import { promisify } from 'util';
 
-import { Api, Bot, InputFile } from 'grammy';
+const execFileAsync = promisify(execFile);
+
+import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -477,24 +481,52 @@ export class TelegramChannel implements Channel {
     filePath: string,
     caption?: string,
   ): Promise<void> {
-    if (!this.bot) {
-      logger.warn('Telegram bot not initialized');
-      return;
-    }
     try {
       const numericId = jid.replace(/^tg:/, '');
-      const file = new InputFile(filePath);
-      const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+      const filename = path.basename(filePath);
+      const ext = filename.split('.').pop()?.toLowerCase() ?? '';
       const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp']);
-      const opts = caption ? { caption } : {};
-      if (imageExts.has(ext)) {
-        await this.bot.api.sendPhoto(numericId, file, opts);
-      } else {
-        await this.bot.api.sendDocument(numericId, file, opts);
+      const method = imageExts.has(ext) ? 'sendPhoto' : 'sendDocument';
+      const field = imageExts.has(ext) ? 'photo' : 'document';
+
+      // Use curl via execFile to upload the file. This bypasses Node.js's
+      // networking stack entirely, avoiding ECONNRESET and undici hang issues
+      // that occur when long-polling and file uploads share the same process.
+      const args = [
+        '-s',
+        '-X',
+        'POST',
+        '-F',
+        `chat_id=${numericId}`,
+        '-F',
+        `${field}=@${filePath};filename=${filename}`,
+      ];
+      if (caption) args.push('-F', `caption=${caption}`);
+      args.push(`https://api.telegram.org/bot${this.botToken}/${method}`);
+
+      const { stdout, stderr } = await execFileAsync('/usr/bin/curl', args, {
+        timeout: 60000,
+      });
+      if (stderr) logger.debug({ stderr }, 'curl stderr');
+      const result = JSON.parse(stdout) as {
+        ok: boolean;
+        description?: string;
+      };
+      if (!result.ok) {
+        throw new Error(
+          `Telegram API error: ${result.description ?? 'unknown'}`,
+        );
       }
       logger.info({ jid, filePath }, 'Telegram file sent');
     } catch (err) {
-      logger.error({ jid, filePath, err }, 'Failed to send Telegram file');
+      const e = err as NodeJS.ErrnoException & {
+        stdout?: string;
+        stderr?: string;
+      };
+      logger.error(
+        { jid, filePath, message: e.message, stdout: e.stdout, stderr: e.stderr },
+        'Failed to send Telegram file',
+      );
     }
   }
 }

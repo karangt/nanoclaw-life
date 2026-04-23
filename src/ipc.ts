@@ -98,19 +98,25 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 data.chatJid &&
                 data.containerPath
               ) {
-                // Authorization: same as send_message
                 const targetGroup = registeredGroups[data.chatJid];
+                logger.info(
+                  {
+                    chatJid: data.chatJid,
+                    sourceGroup,
+                    isMain,
+                    hasTargetGroup: !!targetGroup,
+                  },
+                  'send_file: auth check',
+                );
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  // Dynamically translate container path → host path using
-                  // the group's actual mount table (no hardcoding).
                   const sourceGroupEntry = Object.values(registeredGroups).find(
                     (g) => g.folder === sourceGroup,
                   );
                   if (!sourceGroupEntry) {
-                    logger.warn(
+                    logger.error(
                       { sourceGroup },
                       'send_file: source group not found in registered groups',
                     );
@@ -120,12 +126,29 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       sourceGroupEntry,
                       isMain,
                     );
+                    logger.info(
+                      {
+                        containerPath: data.containerPath,
+                        hostPath,
+                        sourceGroup,
+                      },
+                      'send_file: path translation',
+                    );
                     if (!hostPath) {
-                      logger.warn(
+                      logger.error(
                         { containerPath: data.containerPath, sourceGroup },
                         'send_file: container path not under any mount',
                       );
+                    } else if (!fs.existsSync(hostPath)) {
+                      logger.error(
+                        { hostPath, containerPath: data.containerPath },
+                        'send_file: file not found on host',
+                      );
                     } else {
+                      logger.info(
+                        { chatJid: data.chatJid, hostPath },
+                        'send_file: dispatching to channel',
+                      );
                       await deps.sendFile(
                         data.chatJid,
                         hostPath,
@@ -143,9 +166,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     }
                   }
                 } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC send_file attempt blocked',
+                  logger.error(
+                    {
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      hasTargetGroup: !!targetGroup,
+                      targetFolder: targetGroup?.folder,
+                    },
+                    'send_file: unauthorized — source group mismatch',
                   );
                 }
               }
